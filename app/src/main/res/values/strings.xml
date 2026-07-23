@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">KeepShell</string>
+    <string name="notification_channel_name">SSH 会话</string>
+    <string name="notification_channel_description">保持用户主动连接的 SSH 终端会话</string>
+</resources>
