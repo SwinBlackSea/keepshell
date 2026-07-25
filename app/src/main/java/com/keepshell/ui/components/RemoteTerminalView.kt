@@ -214,7 +214,7 @@ class RemoteTerminalView @JvmOverloads constructor(
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
         outAttrs.inputType =
             InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
+                InputType.TYPE_TEXT_VARIATION_NORMAL or
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         outAttrs.imeOptions =
             EditorInfo.IME_FLAG_NO_FULLSCREEN or
