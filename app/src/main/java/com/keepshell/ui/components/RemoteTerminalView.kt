@@ -3,6 +3,8 @@ package com.keepshell.ui.components
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.text.Editable
 import android.text.InputType
@@ -21,6 +23,7 @@ import com.keepshell.ssh.TerminalEngine
 import com.termux.terminal.TerminalEmulator
 import com.termux.view.TerminalRenderer
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 /**
@@ -33,8 +36,9 @@ class RemoteTerminalView @JvmOverloads constructor(
     attrs: AttributeSet? = null
 ) : View(context, attrs) {
     private var engine: TerminalEngine? = null
-    private var renderer = createRenderer(DEFAULT_FONT_SIZE_SP)
+    private var rendererMetrics = createRendererMetrics(spToPx(DEFAULT_FONT_SIZE_SP))
     private var fontSizeSp = DEFAULT_FONT_SIZE_SP
+    private var overviewMode = false
     private var inputEnabled = false
     private var onTextInput: (String) -> Unit = {}
     private var onRawInput: (ByteArray) -> Unit = {}
@@ -93,7 +97,7 @@ class RemoteTerminalView @JvmOverloads constructor(
                 distanceY: Float
             ): Boolean {
                 scrollRemainder += distanceY
-                val lineSpacing = renderer.fontLineSpacing.coerceAtLeast(1)
+                val lineSpacing = rendererMetrics.lineSpacingPx
                 val rows = (scrollRemainder / lineSpacing).toInt()
                 if (rows != 0) {
                     scrollRemainder -= rows * lineSpacing
@@ -120,6 +124,7 @@ class RemoteTerminalView @JvmOverloads constructor(
         terminalEngine: TerminalEngine,
         revision: Long,
         newFontSizeSp: Int,
+        newOverviewMode: Boolean,
         enabled: Boolean,
         textInput: (String) -> Unit,
         rawInput: (ByteArray) -> Unit,
@@ -144,11 +149,10 @@ class RemoteTerminalView @JvmOverloads constructor(
             userScrolledBack = false
             displayedRevision = Long.MIN_VALUE
         }
-        if (newFontSizeSp != fontSizeSp) {
+        if (newFontSizeSp != fontSizeSp || newOverviewMode != overviewMode) {
             fontSizeSp = newFontSizeSp
-            renderer = createRenderer(fontSizeSp)
-            lastSentSize = null
-            notifyTerminalSize()
+            overviewMode = newOverviewMode
+            updateRendererForViewport(force = true)
         }
         if (revision != displayedRevision) {
             applyScreenUpdate(revision)
@@ -157,12 +161,20 @@ class RemoteTerminalView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(TERMINAL_BACKGROUND)
-        engine?.render(canvas, renderer, topRow)
+        val checkpoint = canvas.save()
+        canvas.clipRect(0, 0, width, height)
+        try {
+            canvas.drawColor(TERMINAL_BACKGROUND)
+            engine?.render(canvas, rendererMetrics.renderer, topRow)
+        } finally {
+            canvas.restoreToCount(checkpoint)
+        }
     }
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
+        clipBounds = Rect(0, 0, width, height)
+        updateRendererForViewport()
         notifyTerminalSize()
     }
 
@@ -288,6 +300,12 @@ class RemoteTerminalView @JvmOverloads constructor(
         return true
     }
 
+    fun hideKeyboard() {
+        val inputManager =
+            context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        inputManager.hideSoftInputFromWindow(windowToken, 0)
+    }
+
     private fun applyScreenUpdate(revision: Long) {
         val terminal = engine ?: return
         val state = terminal.viewportState(clearScrollCounter = true)
@@ -308,11 +326,16 @@ class RemoteTerminalView @JvmOverloads constructor(
 
     private fun notifyTerminalSize() {
         if (width <= 0 || height <= 0) return
-        val cellWidth = renderer.fontWidth.coerceAtLeast(1f)
-        val cellHeight = renderer.fontLineSpacing.coerceAtLeast(1)
+        val cellWidth = rendererMetrics.cellWidthPx
+        val cellHeight = rendererMetrics.lineSpacingPx
         val size = ViewportSize(
             columns = (width / cellWidth).toInt().coerceAtLeast(MIN_COLUMNS),
-            rows = (height / cellHeight).coerceAtLeast(MIN_ROWS),
+            rows = TerminalViewportMath.visibleRows(
+                heightPx = height,
+                lineSpacingPx = cellHeight,
+                verticalOffsetPx = rendererMetrics.verticalOffsetPx,
+                minimumRows = MIN_ROWS
+            ),
             cellWidthPx = cellWidth.roundToInt().coerceAtLeast(1),
             cellHeightPx = cellHeight,
             widthPx = width,
@@ -394,19 +417,87 @@ class RemoteTerminalView @JvmOverloads constructor(
     }
 
     private fun terminalColumn(x: Float): Int =
-        (x / renderer.fontWidth.coerceAtLeast(1f)).toInt() + 1
+        ((x / rendererMetrics.cellWidthPx).toInt() + 1)
+            .coerceIn(1, engine?.viewportState()?.columns ?: MIN_COLUMNS)
 
     private fun terminalRow(y: Float): Int =
-        (y / renderer.fontLineSpacing.coerceAtLeast(1)).toInt() + 1
+        (
+            (
+                (y - rendererMetrics.verticalOffsetPx)
+                    .coerceAtLeast(0f) / rendererMetrics.lineSpacingPx
+                ).toInt() + 1
+            ).coerceIn(1, engine?.viewportState()?.rows ?: MIN_ROWS)
 
-    private fun createRenderer(sizeSp: Int): TerminalRenderer {
-        val sizePx = TypedValue.applyDimension(
+    private fun updateRendererForViewport(force: Boolean = false) {
+        val baseTextSizePx = spToPx(fontSizeSp)
+        val baseMetrics = createRendererMetrics(baseTextSizePx)
+        var targetTextSizePx = if (overviewMode && width > 0) {
+            TerminalViewportMath.overviewTextSizePx(
+                baseTextSizePx = baseTextSizePx,
+                viewportWidthPx = width,
+                baseCellWidthPx = baseMetrics.cellWidthPx,
+                targetColumns = OVERVIEW_COLUMNS
+            )
+        } else {
+            baseTextSizePx
+        }
+
+        var targetMetrics = if (targetTextSizePx == baseTextSizePx) {
+            baseMetrics
+        } else {
+            createRendererMetrics(targetTextSizePx)
+        }
+        while (
+            overviewMode &&
+            width > 0 &&
+            targetTextSizePx > 1 &&
+            (width / targetMetrics.cellWidthPx).toInt() < OVERVIEW_COLUMNS
+        ) {
+            targetTextSizePx -= 1
+            targetMetrics = createRendererMetrics(targetTextSizePx)
+        }
+
+        if (!force && targetMetrics.textSizePx == rendererMetrics.textSizePx) return
+        rendererMetrics = targetMetrics
+        lastSentSize = null
+        notifyTerminalSize()
+        invalidate()
+    }
+
+    private fun spToPx(sizeSp: Int): Int =
+        TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_SP,
             sizeSp.toFloat(),
             resources.displayMetrics
-        ).roundToInt()
-        return TerminalRenderer(sizePx, Typeface.MONOSPACE)
+        ).roundToInt().coerceAtLeast(1)
+
+    private fun createRendererMetrics(textSizePx: Int): RendererMetrics {
+        val safeTextSize = textSizePx.coerceAtLeast(1)
+        val paint = Paint().apply {
+            typeface = Typeface.MONOSPACE
+            isAntiAlias = true
+            textSize = safeTextSize.toFloat()
+        }
+        val lineSpacing = ceil(paint.fontSpacing.toDouble()).toInt().coerceAtLeast(1)
+        val verticalOffset = (
+            lineSpacing + ceil(paint.ascent().toDouble()).toInt()
+            ).coerceAtLeast(0)
+        return RendererMetrics(
+            renderer = TerminalRenderer(safeTextSize, Typeface.MONOSPACE),
+            textSizePx = safeTextSize,
+            cellWidthPx = paint.measureText("X").coerceAtLeast(1f),
+            lineSpacingPx = lineSpacing,
+            verticalOffsetPx = verticalOffset
+        )
     }
+
+    private data class RendererMetrics(
+        val renderer: TerminalRenderer,
+        val textSizePx: Int,
+        val cellWidthPx: Float,
+        val lineSpacingPx: Int,
+        val verticalOffsetPx: Int
+    )
 
     private data class ViewportSize(
         val columns: Int,
@@ -419,6 +510,7 @@ class RemoteTerminalView @JvmOverloads constructor(
 
     private companion object {
         const val DEFAULT_FONT_SIZE_SP = 14
+        const val OVERVIEW_COLUMNS = 80
         const val MIN_COLUMNS = 4
         const val MIN_ROWS = 4
         const val MAX_SCROLL_EVENTS = 24

@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,17 +39,21 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,6 +66,7 @@ import com.keepshell.ui.MainViewModel
 import com.keepshell.ui.components.PrimaryActionButton
 import com.keepshell.ui.components.RemoteTerminalView
 import com.keepshell.ui.components.StatusDot
+import com.keepshell.ui.components.TerminalViewportMath
 import com.keepshell.ui.theme.Danger
 import com.keepshell.ui.theme.Online
 import com.keepshell.ui.theme.Terminal
@@ -87,10 +93,43 @@ fun TerminalScreen(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var confirmDisconnect by remember { mutableStateOf(false) }
+    var overviewMode by rememberSaveable { mutableStateOf(false) }
+    var terminalFontSize by rememberSaveable(settings.terminalFontSize) {
+        mutableIntStateOf(settings.terminalFontSize)
+    }
+    var terminalView by remember { mutableStateOf<RemoteTerminalView?>(null) }
     val context = LocalContext.current
 
     LaunchedEffect(disconnectConfirmationRequest) {
         if (disconnectConfirmationRequest > 0) confirmDisconnect = true
+    }
+
+    val toggleOverview = {
+        val enabling = !overviewMode
+        overviewMode = enabling
+        if (enabling) terminalView?.hideKeyboard()
+    }
+    val zoomOut = {
+        if (!overviewMode) {
+            terminalFontSize = TerminalViewportMath.adjustedFontSizeSp(
+                currentSizeSp = terminalFontSize,
+                deltaSp = -1,
+                minimumSizeSp = MIN_TERMINAL_FONT_SIZE_SP,
+                maximumSizeSp = MAX_TERMINAL_FONT_SIZE_SP
+            )
+        }
+    }
+    val zoomIn = {
+        if (overviewMode) {
+            overviewMode = false
+        } else {
+            terminalFontSize = TerminalViewportMath.adjustedFontSizeSp(
+                currentSizeSp = terminalFontSize,
+                deltaSp = 1,
+                minimumSizeSp = MIN_TERMINAL_FONT_SIZE_SP,
+                maximumSizeSp = MAX_TERMINAL_FONT_SIZE_SP
+            )
+        }
     }
 
     Column(
@@ -166,8 +205,13 @@ fun TerminalScreen(
                 ConnectedTerminal(
                     terminalEngine = terminalEngine,
                     terminalRevision = terminalRevision,
-                    fontSize = settings.terminalFontSize,
+                    fontSize = terminalFontSize,
                     ctrlArmed = ctrlArmed,
+                    overviewMode = overviewMode,
+                    onZoomOut = zoomOut,
+                    onToggleOverview = toggleOverview,
+                    onZoomIn = zoomIn,
+                    onTerminalViewReady = { terminalView = it },
                     viewModel = viewModel,
                     modifier = Modifier.weight(1f)
                 )
@@ -177,8 +221,10 @@ fun TerminalScreen(
                     TerminalOutput(
                         terminalEngine = terminalEngine,
                         terminalRevision = terminalRevision,
-                        fontSize = settings.terminalFontSize,
+                        fontSize = terminalFontSize,
+                        overviewMode = overviewMode,
                         readOnly = true,
+                        onTerminalViewReady = { terminalView = it },
                         viewModel = viewModel
                     )
                 }
@@ -188,8 +234,10 @@ fun TerminalScreen(
                     TerminalOutput(
                         terminalEngine = terminalEngine,
                         terminalRevision = terminalRevision,
-                        fontSize = settings.terminalFontSize,
+                        fontSize = terminalFontSize,
+                        overviewMode = overviewMode,
                         readOnly = state.phase != SessionPhase.CONNECTED,
+                        onTerminalViewReady = { terminalView = it },
                         viewModel = viewModel,
                         modifier = Modifier.fillMaxSize()
                     )
@@ -233,6 +281,11 @@ private fun ConnectedTerminal(
     terminalRevision: Long,
     fontSize: Int,
     ctrlArmed: Boolean,
+    overviewMode: Boolean,
+    onZoomOut: () -> Unit,
+    onToggleOverview: () -> Unit,
+    onZoomIn: () -> Unit,
+    onTerminalViewReady: (RemoteTerminalView) -> Unit,
     viewModel: MainViewModel,
     modifier: Modifier = Modifier
 ) {
@@ -242,30 +295,53 @@ private fun ConnectedTerminal(
                 terminalEngine = terminalEngine,
                 terminalRevision = terminalRevision,
                 fontSize = fontSize,
+                overviewMode = overviewMode,
                 readOnly = false,
+                onTerminalViewReady = onTerminalViewReady,
                 viewModel = viewModel,
                 modifier = Modifier.fillMaxSize()
             )
-            ExtraKeys(
-                ctrlArmed = ctrlArmed,
-                onKey = viewModel::sendExtraKey
+            TerminalZoomControls(
+                overviewMode = overviewMode,
+                terminalFontSize = fontSize,
+                onZoomOut = onZoomOut,
+                onToggleOverview = onToggleOverview,
+                onZoomIn = onZoomIn
             )
+            if (!overviewMode) {
+                ExtraKeys(
+                    ctrlArmed = ctrlArmed,
+                    onKey = viewModel::sendExtraKey
+                )
+            }
         },
         modifier = modifier.fillMaxWidth()
     ) { measurables, constraints ->
         val width = constraints.maxWidth
         val height = constraints.maxHeight
-        val keyHeight = 56.dp.roundToPx().coerceAtMost(height)
-        val terminalHeight = (height - keyHeight).coerceAtLeast(0)
+        val zoomHeight = 59.dp.roundToPx().coerceAtMost(height)
+        val remainingAfterZoom = (height - zoomHeight).coerceAtLeast(0)
+        val keyHeight = if (overviewMode) {
+            0
+        } else {
+            56.dp.roundToPx().coerceAtMost(remainingAfterZoom)
+        }
+        val terminalHeight = (remainingAfterZoom - keyHeight).coerceAtLeast(0)
         val terminal = measurables[0].measure(
             Constraints.fixed(width, terminalHeight)
         )
-        val keys = measurables[1].measure(
-            Constraints.fixed(width, keyHeight)
+        val zoomControls = measurables[1].measure(
+            Constraints.fixed(width, zoomHeight)
         )
+        val keys = if (overviewMode) {
+            null
+        } else {
+            measurables[2].measure(Constraints.fixed(width, keyHeight))
+        }
         layout(width, height) {
-            terminal.placeRelative(0, 0)
-            keys.placeRelative(0, terminalHeight)
+            zoomControls.placeRelative(0, 0)
+            terminal.placeRelative(0, zoomHeight)
+            keys?.placeRelative(0, zoomHeight + terminalHeight)
         }
     }
 }
@@ -290,14 +366,15 @@ private fun TerminalHeader(
         }
         Column(
             modifier = Modifier.weight(1f),
-            horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             Text(
                 state.host?.name ?: "终端",
                 color = TerminalText,
                 fontWeight = FontWeight.Bold,
-                fontSize = 14.sp
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val offline = state.phase == SessionPhase.DISCONNECTED || state.phase == SessionPhase.FAILED
@@ -309,7 +386,9 @@ private fun TerminalHeader(
                 Text(
                     text = terminalStatus(state),
                     color = if (offline) Color(0xFFE98A83) else TerminalMuted,
-                    fontSize = 10.sp
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -321,6 +400,98 @@ private fun TerminalHeader(
         }
     }
     HorizontalDivider(color = TerminalLine)
+}
+
+@Composable
+private fun TerminalZoomControls(
+    overviewMode: Boolean,
+    terminalFontSize: Int,
+    onZoomOut: () -> Unit,
+    onToggleOverview: () -> Unit,
+    onZoomIn: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(8.dp)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .requiredHeight(59.dp)
+            .background(TerminalRaised)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            TerminalZoomButton(
+                label = "缩小  A−",
+                enabled = !overviewMode && terminalFontSize > MIN_TERMINAL_FONT_SIZE_SP,
+                active = false,
+                onClick = onZoomOut,
+                modifier = Modifier.weight(1f),
+                shape = shape
+            )
+            TerminalZoomButton(
+                label = if (overviewMode) "✓ 已适配 80 列" else "适配 80 列",
+                enabled = true,
+                active = overviewMode,
+                onClick = onToggleOverview,
+                modifier = Modifier.weight(1.25f),
+                shape = shape
+            )
+            TerminalZoomButton(
+                label = "放大  A+",
+                enabled = overviewMode || terminalFontSize < MAX_TERMINAL_FONT_SIZE_SP,
+                active = false,
+                onClick = onZoomIn,
+                modifier = Modifier.weight(1f),
+                shape = shape
+            )
+        }
+        HorizontalDivider(color = TerminalLine)
+    }
+}
+
+@Composable
+private fun TerminalZoomButton(
+    label: String,
+    enabled: Boolean,
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier,
+    shape: RoundedCornerShape
+) {
+    val outlineColor = if (active) TerminalGreen else TerminalLine
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier
+            .height(42.dp)
+            .background(
+                color = if (active) {
+                    TerminalGreen.copy(alpha = 0.18f)
+                } else {
+                    Color(0xFF222B2D)
+                },
+                shape = shape
+            )
+            .border(1.dp, outlineColor, shape)
+    ) {
+        Text(
+            text = label,
+            color = when {
+                !enabled -> TerminalMuted.copy(alpha = 0.58f)
+                active -> TerminalGreen
+                else -> TerminalText
+            },
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            fontSize = 11.sp,
+            maxLines = 1
+        )
+    }
 }
 
 @Composable
@@ -381,7 +552,9 @@ private fun TerminalOutput(
     terminalEngine: TerminalEngine,
     terminalRevision: Long,
     fontSize: Int,
+    overviewMode: Boolean = false,
     readOnly: Boolean,
+    onTerminalViewReady: (RemoteTerminalView) -> Unit = {},
     viewModel: MainViewModel,
     modifier: Modifier = Modifier
 ) {
@@ -392,12 +565,16 @@ private fun TerminalOutput(
             .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
         AndroidView(
-            factory = { context -> RemoteTerminalView(context) },
+            factory = { context ->
+                RemoteTerminalView(context).also(onTerminalViewReady)
+            },
             update = { terminalView ->
+                onTerminalViewReady(terminalView)
                 terminalView.bind(
                     terminalEngine = terminalEngine,
                     revision = terminalRevision,
                     newFontSizeSp = fontSize,
+                    newOverviewMode = overviewMode,
                     enabled = !readOnly,
                     textInput = viewModel::sendTerminalText,
                     rawInput = viewModel::sendTerminalBytes,
@@ -406,6 +583,7 @@ private fun TerminalOutput(
             },
             modifier = Modifier
                 .fillMaxSize()
+                .clipToBounds()
         )
     }
 }
@@ -479,6 +657,9 @@ private fun terminalStatus(state: SessionState): String {
         SessionPhase.IDLE -> "未连接"
     }
 }
+
+private const val MIN_TERMINAL_FONT_SIZE_SP = 6
+private const val MAX_TERMINAL_FONT_SIZE_SP = 32
 
 @Composable
 private fun elapsed(startedAt: Long?): String {
