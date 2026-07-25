@@ -4,7 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,19 +12,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
@@ -53,31 +44,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.keepshell.data.AppSettings
 import com.keepshell.ssh.SessionPhase
 import com.keepshell.ssh.SessionState
+import com.keepshell.ssh.TerminalEngine
 import com.keepshell.ui.MainViewModel
 import com.keepshell.ui.components.PrimaryActionButton
+import com.keepshell.ui.components.RemoteTerminalView
 import com.keepshell.ui.components.StatusDot
 import com.keepshell.ui.theme.Danger
 import com.keepshell.ui.theme.Online
@@ -95,7 +77,8 @@ import kotlinx.coroutines.delay
 @Composable
 fun TerminalScreen(
     state: SessionState,
-    lines: List<String>,
+    terminalEngine: TerminalEngine,
+    terminalRevision: Long,
     settings: AppSettings,
     ctrlArmed: Boolean,
     disconnectConfirmationRequest: Long,
@@ -114,7 +97,6 @@ fun TerminalScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Terminal)
-            .imePadding()
     ) {
         TerminalHeader(
             state = state,
@@ -180,39 +162,42 @@ fun TerminalScreen(
             SessionPhase.CONNECTING, SessionPhase.AUTHENTICATING -> {
                 ConnectingPanel(state.phase)
             }
-            SessionPhase.FINGERPRINT_REQUIRED -> {
-                Box(Modifier.weight(1f)) {
-                    TerminalOutput(
-                        lines = lines,
-                        fontSize = settings.terminalFontSize,
-                        readOnly = true,
-                        userName = state.host?.username ?: "user",
-                        hostName = state.host?.name ?: "remote",
-                        ctrlArmed = ctrlArmed,
-                        viewModel = viewModel
-                    )
-                }
-            }
-            else -> {
-                TerminalOutput(
-                    lines = lines,
+            SessionPhase.CONNECTED -> {
+                ConnectedTerminal(
+                    terminalEngine = terminalEngine,
+                    terminalRevision = terminalRevision,
                     fontSize = settings.terminalFontSize,
-                    readOnly = state.phase != SessionPhase.CONNECTED,
-                    userName = state.host?.username ?: "user",
-                    hostName = state.host?.name ?: "remote",
                     ctrlArmed = ctrlArmed,
                     viewModel = viewModel,
                     modifier = Modifier.weight(1f)
                 )
             }
+            SessionPhase.FINGERPRINT_REQUIRED -> {
+                Box(Modifier.weight(1f)) {
+                    TerminalOutput(
+                        terminalEngine = terminalEngine,
+                        terminalRevision = terminalRevision,
+                        fontSize = settings.terminalFontSize,
+                        readOnly = true,
+                        viewModel = viewModel
+                    )
+                }
+            }
+            else -> {
+                Box(Modifier.weight(1f)) {
+                    TerminalOutput(
+                        terminalEngine = terminalEngine,
+                        terminalRevision = terminalRevision,
+                        fontSize = settings.terminalFontSize,
+                        readOnly = state.phase != SessionPhase.CONNECTED,
+                        viewModel = viewModel,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
         }
 
-        if (state.phase == SessionPhase.CONNECTED) {
-            ExtraKeys(
-                ctrlArmed = ctrlArmed,
-                onKey = viewModel::sendExtraKey
-            )
-        } else if (
+        if (
             state.phase == SessionPhase.DISCONNECTED ||
             state.phase == SessionPhase.FAILED
         ) {
@@ -239,6 +224,49 @@ fun TerminalScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun ConnectedTerminal(
+    terminalEngine: TerminalEngine,
+    terminalRevision: Long,
+    fontSize: Int,
+    ctrlArmed: Boolean,
+    viewModel: MainViewModel,
+    modifier: Modifier = Modifier
+) {
+    Layout(
+        content = {
+            TerminalOutput(
+                terminalEngine = terminalEngine,
+                terminalRevision = terminalRevision,
+                fontSize = fontSize,
+                readOnly = false,
+                viewModel = viewModel,
+                modifier = Modifier.fillMaxSize()
+            )
+            ExtraKeys(
+                ctrlArmed = ctrlArmed,
+                onKey = viewModel::sendExtraKey
+            )
+        },
+        modifier = modifier.fillMaxWidth()
+    ) { measurables, constraints ->
+        val width = constraints.maxWidth
+        val height = constraints.maxHeight
+        val keyHeight = 56.dp.roundToPx().coerceAtMost(height)
+        val terminalHeight = (height - keyHeight).coerceAtLeast(0)
+        val terminal = measurables[0].measure(
+            Constraints.fixed(width, terminalHeight)
+        )
+        val keys = measurables[1].measure(
+            Constraints.fixed(width, keyHeight)
+        )
+        layout(width, height) {
+            terminal.placeRelative(0, 0)
+            keys.placeRelative(0, terminalHeight)
+        }
     }
 }
 
@@ -350,141 +378,57 @@ private fun ConnectingPanel(phase: SessionPhase) {
 
 @Composable
 private fun TerminalOutput(
-    lines: List<String>,
+    terminalEngine: TerminalEngine,
+    terminalRevision: Long,
     fontSize: Int,
     readOnly: Boolean,
-    userName: String,
-    hostName: String,
-    ctrlArmed: Boolean,
     viewModel: MainViewModel,
     modifier: Modifier = Modifier
 ) {
-    val listState = rememberLazyListState()
-    val density = LocalDensity.current
-
-    LaunchedEffect(lines.size, lines.lastOrNull()) {
-        if (lines.isNotEmpty()) listState.scrollToItem(lines.lastIndex + if (readOnly) 0 else 1)
-    }
-
-    LazyColumn(
-        state = listState,
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .background(Terminal)
-            .padding(horizontal = 14.dp, vertical = 12.dp)
-            .onSizeChanged { size ->
-                val charWidthPx = with(density) { (fontSize.sp.toPx() * 0.62f).coerceAtLeast(1f) }
-                val lineHeightPx = with(density) { (fontSize.sp.toPx() * 1.45f).coerceAtLeast(1f) }
-                viewModel.resizeTerminal(
-                    columns = (size.width / charWidthPx).toInt(),
-                    rows = (size.height / lineHeightPx).toInt(),
-                    widthPx = size.width,
-                    heightPx = size.height
-                )
-            }
+            .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
-        items(lines.size) { index ->
-            SelectionContainer {
-                Text(
-                    text = terminalLine(lines[index]),
-                    color = TerminalText,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = fontSize.sp,
-                    lineHeight = (fontSize * 1.45f).sp
+        AndroidView(
+            factory = { context -> RemoteTerminalView(context) },
+            update = { terminalView ->
+                terminalView.bind(
+                    terminalEngine = terminalEngine,
+                    revision = terminalRevision,
+                    newFontSizeSp = fontSize,
+                    enabled = !readOnly,
+                    textInput = viewModel::sendTerminalText,
+                    rawInput = viewModel::sendTerminalBytes,
+                    terminalResize = viewModel::resizeTerminal
                 )
-            }
-        }
-        if (!readOnly) {
-            item {
-                TerminalCommandInput(
-                    fontSize = fontSize,
-                    userName = userName,
-                    hostName = hostName,
-                    ctrlArmed = ctrlArmed,
-                    onCtrlCharacter = viewModel::sendCtrlCharacter,
-                    onSubmit = viewModel::sendCommand
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun TerminalCommandInput(
-    fontSize: Int,
-    userName: String,
-    hostName: String,
-    ctrlArmed: Boolean,
-    onCtrlCharacter: (Char) -> Unit,
-    onSubmit: (String) -> Unit
-) {
-    var value by remember { mutableStateOf("") }
-    val focusRequester = remember { FocusRequester() }
-    val promptMarker = if (userName == "root") "#" else "\$"
-    val prompt = "$userName@$hostName:~$promptMarker "
-
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            prompt,
-            color = TerminalGreen,
-            fontFamily = FontFamily.Monospace,
-            fontSize = fontSize.sp
-        )
-        BasicTextField(
-            value = value,
-            onValueChange = { updated ->
-                if (ctrlArmed && updated.isNotEmpty()) {
-                    onCtrlCharacter(updated.last())
-                    value = ""
-                } else {
-                    value = updated
-                }
             },
             modifier = Modifier
-                .weight(1f)
-                .focusRequester(focusRequester)
-                .onPreviewKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
-                        onSubmit(value)
-                        value = ""
-                        true
-                    } else {
-                        false
-                    }
-                },
-            textStyle = androidx.compose.ui.text.TextStyle(
-                color = TerminalText,
-                fontFamily = FontFamily.Monospace,
-                fontSize = fontSize.sp
-            ),
-            cursorBrush = androidx.compose.ui.graphics.SolidColor(TerminalGreen),
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = {
-                onSubmit(value)
-                value = ""
-            })
+                .fillMaxSize()
         )
     }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
 }
 
 @Composable
-private fun ExtraKeys(ctrlArmed: Boolean, onKey: (String) -> Unit) {
+private fun ExtraKeys(
+    ctrlArmed: Boolean,
+    onKey: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .requiredHeight(56.dp)
             .background(TerminalRaised)
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 7.dp, vertical = 7.dp)
-            .navigationBarsPadding(),
+            .padding(horizontal = 7.dp, vertical = 7.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp)
     ) {
         listOf("ESC", "CTRL", "TAB", "↑", "↓", "←", "→").forEach { key ->
             TextButton(
                 onClick = { onKey(key) },
                 modifier = Modifier
-                    .width(if (key.length > 1) 68.dp else 58.dp)
+                    .width(if (key.length > 1) 52.dp else 42.dp)
                     .height(42.dp)
                     .background(
                         if (key == "CTRL" && ctrlArmed) TerminalGreen.copy(alpha = 0.2f)
@@ -509,8 +453,7 @@ private fun ReconnectPanel(onReconnect: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .background(TerminalRaised)
-            .padding(horizontal = 18.dp, vertical = 14.dp)
-            .navigationBarsPadding(),
+            .padding(horizontal = 18.dp, vertical = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         PrimaryActionButton(
@@ -550,23 +493,6 @@ private fun elapsed(startedAt: Long?): String {
         }
     }
     return "%d:%02d".format(seconds / 60, seconds % 60)
-}
-
-private fun terminalLine(line: String): AnnotatedString = buildAnnotatedString {
-    val promptEnd = listOf(line.indexOf("# "), line.indexOf("$ "))
-        .filter { it >= 0 }
-        .minOrNull()
-        ?.plus(2)
-    if (promptEnd != null) {
-        withStyle(SpanStyle(color = TerminalGreen, fontWeight = FontWeight.Medium)) {
-            append(line.substring(0, promptEnd))
-        }
-        append(line.substring(promptEnd))
-    } else {
-        withStyle(SpanStyle(color = if (line.startsWith("──")) Color(0xFFD77E76) else TerminalText)) {
-            append(line)
-        }
-    }
 }
 
 private fun formatClock(timestamp: Long?): String =

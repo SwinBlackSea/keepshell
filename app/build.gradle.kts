@@ -13,8 +13,8 @@ android {
         applicationId = "com.keepshell"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -29,8 +29,15 @@ android {
         resources.excludes += setOf(
             "/META-INF/{AL2.0,LGPL2.1}",
             "META-INF/DEPENDENCIES",
-            "META-INF/INDEX.LIST"
+            "META-INF/INDEX.LIST",
+            "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+            "META-INF/versions/11/OSGI-INF/MANIFEST.MF",
+            "META-INF/versions/15/OSGI-INF/MANIFEST.MF",
+            "META-INF/versions/9/module-info.class"
         )
+        // KeepShell uses Termux's pure Java terminal emulator and renderer, but
+        // not TerminalSession's local subprocess/JNI bridge.
+        jniLibs.excludes += setOf("lib/*/libtermux.so")
     }
 
     buildTypes {
@@ -86,6 +93,8 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
 
     implementation("com.github.mwiede:jsch:0.2.21")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.84")
+    implementation("com.github.termux.termux-app:terminal-view:0.118.3")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

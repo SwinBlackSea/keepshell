@@ -17,7 +17,7 @@ data class HostEntity(
     val username: String,
     val authMethod: String = AuthMethod.PASSWORD.name,
     val keyDisplayName: String? = null,
-    val keepAliveSeconds: Int = 30,
+    val keepAliveSeconds: Int = 15,
     val connectTimeoutSeconds: Int = 15,
     val favorite: Boolean = false,
     val sortOrder: Int = 0,
@@ -41,7 +41,7 @@ data class HostDraft(
     val privateKey: String = "",
     val privateKeyName: String? = null,
     val passphrase: String = "",
-    val keepAliveSeconds: Int = 30,
+    val keepAliveSeconds: Int = 15,
     val connectTimeoutSeconds: Int = 15
 ) {
     fun validate(): Map<String, String> = buildMap {

@@ -13,6 +13,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -60,9 +61,12 @@ class SshSessionService : Service() {
     @Volatile private var shellInput: InputStream? = null
     @Volatile private var shellOutput: OutputStream? = null
     private var connectionJob: Job? = null
+    @Volatile private var resizeJob: Job? = null
     private var lastHostId: Long? = null
     private var awaitingFingerprintForHostId: Long? = null
     private var enhancedKeepAliveLock: PowerManager.WakeLock? = null
+    private val outboundLock = Any()
+    private var lastPtySize: PtySize? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -84,7 +88,11 @@ class SshSessionService : Service() {
             )
             ACTION_REJECT_FINGERPRINT -> rejectPendingFingerprint()
         }
-        return START_NOT_STICKY
+        // A foreground SSH session is explicitly started by the user. If Android
+        // has to reclaim the process, redeliver the connect intent so the session
+        // can be restored instead of silently leaving the UI waiting for a manual
+        // reconnect.
+        return START_REDELIVER_INTENT
     }
 
     fun connect(hostId: Long) {
@@ -130,34 +138,73 @@ class SshSessionService : Service() {
     }
 
     fun manualReconnect() {
-        val hostId = lastHostId ?: return
         val state = repository.state.value
+        // The service is stopped after a transport ends. If the Activity remains
+        // alive, a later bind creates a fresh service instance, so the in-memory
+        // lastHostId is no longer available. The repository still owns the host
+        // shown by the disconnected session and is the reliable fallback.
+        val hostId = lastHostId ?: state.host?.id ?: return
         if (state.hasActiveTransport || state.isBusy) return
-        repository.terminal.appendSessionDivider("${clock()} 开始新会话")
-        connectionJob?.cancel()
-        connectionJob = scope.launch { connectInternal(hostId, isManualReconnect = true) }
+        lastHostId = hostId
+        // Re-enter through startForegroundService even when this instance is
+        // still alive only because the Activity is bound to it. Starting the
+        // transport directly from that stopped service would let Android destroy
+        // it as soon as the Activity goes to the background.
+        startConnection(this, hostId)
     }
 
     fun send(bytes: ByteArray) {
-        val output = shellOutput ?: return
+        if (bytes.isEmpty() || shellOutput == null) return
+        val payload = bytes.copyOf()
         scope.launch {
             runCatching {
-                output.write(bytes)
-                output.flush()
-            }.onFailure { handleTransportEnd("发送失败") }
+                // Channel#getOutputStream() keeps mutable packet-buffer state and
+                // is not safe for overlapping write/flush calls. IMEs can deliver
+                // Enter through both key and action paths, while extra keys may
+                // also arrive rapidly, so every outbound operation is serialized.
+                synchronized(outboundLock) {
+                    val output = shellOutput ?: return@synchronized
+                    output.write(payload)
+                    output.flush()
+                }
+            }.onFailure { error ->
+                Log.w(TAG, "SSH send failed", error)
+                handleTransportEnd("发送失败")
+            }
         }
     }
 
     fun sendText(text: String) = send(text.toByteArray(Charsets.UTF_8))
 
     fun resize(columns: Int, rows: Int, widthPx: Int = 0, heightPx: Int = 0) {
-        runCatching {
-            shellChannel?.setPtySize(
-                columns.coerceAtLeast(20),
-                rows.coerceAtLeast(8),
-                widthPx.coerceAtLeast(0),
-                heightPx.coerceAtLeast(0)
-            )
+        val requested = PtySize(
+            columns = columns.coerceAtLeast(4),
+            rows = rows.coerceAtLeast(4),
+            widthPx = widthPx.coerceAtLeast(0),
+            heightPx = heightPx.coerceAtLeast(0)
+        )
+        resizeJob?.cancel()
+        resizeJob = scope.launch {
+            // Opening/closing the IME produces several transient measurements.
+            // Send only the settled size so the remote shell does not repeatedly
+            // reflow while the user is typing.
+            delay(150)
+            runCatching {
+                synchronized(outboundLock) {
+                    if (lastPtySize == requested) return@synchronized
+                    val channel = shellChannel?.takeIf { it.isConnected }
+                        ?: return@synchronized
+                    channel.setPtySize(
+                        requested.columns,
+                        requested.rows,
+                        requested.widthPx,
+                        requested.heightPx
+                    )
+                    lastPtySize = requested
+                }
+            }.onFailure { error ->
+                Log.w(TAG, "SSH terminal resize failed", error)
+            }
         }
     }
 
@@ -237,7 +284,9 @@ class SshSessionService : Service() {
                 if (host.auth == AuthMethod.PASSWORD) {
                     setPassword(credentials.password ?: throw IllegalStateException("未找到密码"))
                 }
-                timeout = host.connectTimeoutSeconds * 1_000
+                // connect(timeout) below bounds only the connection handshake.
+                // JSch's serverAliveInterval owns the established socket read
+                // timeout and turns idle timeouts into SSH keepalive probes.
                 serverAliveInterval = host.keepAliveSeconds * 1_000
                 serverAliveCountMax = 3
             }
@@ -246,12 +295,26 @@ class SshSessionService : Service() {
 
             val channel = session.openChannel("shell") as ChannelShell
             channel.setPty(true)
-            channel.setPtyType("xterm-256color", 80, 24, 0, 0)
+            val viewport = repository.terminal.viewportState()
+            channel.setPtyType(
+                "xterm-256color",
+                viewport.columns,
+                viewport.rows,
+                viewport.widthPx,
+                viewport.heightPx
+            )
             val input = channel.inputStream
             val output = channel.outputStream
             shellChannel = channel
             shellInput = input
             shellOutput = output
+            repository.terminal.setOutputSink(::send)
+            lastPtySize = PtySize(
+                viewport.columns,
+                viewport.rows,
+                viewport.widthPx,
+                viewport.heightPx
+            )
             channel.connect(host.connectTimeoutSeconds * 1_000)
 
             hostRepository.markConnected(host.id)
@@ -311,7 +374,8 @@ class SshSessionService : Service() {
                 ?: "远端已关闭连接")
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
+            Log.w(TAG, "SSH read failed", error)
             handleTransportEnd("网络或服务器已中断连接")
         }
     }
@@ -358,14 +422,20 @@ class SshSessionService : Service() {
     @Synchronized
     private fun closeTransport() {
         releaseEnhancedKeepAliveLock()
-        runCatching { shellOutput?.close() }
-        runCatching { shellInput?.close() }
-        runCatching { shellChannel?.disconnect() }
-        runCatching { sshSession?.disconnect() }
-        shellOutput = null
-        shellInput = null
-        shellChannel = null
-        sshSession = null
+        resizeJob?.cancel()
+        resizeJob = null
+        synchronized(outboundLock) {
+            runCatching { shellOutput?.close() }
+            runCatching { shellInput?.close() }
+            runCatching { shellChannel?.disconnect() }
+            runCatching { sshSession?.disconnect() }
+            shellOutput = null
+            shellInput = null
+            shellChannel = null
+            sshSession = null
+            repository.terminal.setOutputSink(null)
+            lastPtySize = null
+        }
     }
 
     @Synchronized
@@ -533,6 +603,7 @@ class SshSessionService : Service() {
     }
 
     companion object {
+        private const val TAG = "KeepShellSSH"
         private const val CHANNEL_ID = "ssh_session"
         private const val NOTIFICATION_ID = 4102
         private const val EXTRA_HOST_ID = "host_id"
@@ -552,4 +623,11 @@ class SshSessionService : Service() {
             ContextCompat.startForegroundService(context, connectIntent(context, hostId))
         }
     }
+
+    private data class PtySize(
+        val columns: Int,
+        val rows: Int,
+        val widthPx: Int,
+        val heightPx: Int
+    )
 }

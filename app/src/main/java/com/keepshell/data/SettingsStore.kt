@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 data class AppSettings(
-    val enhancedKeepAlive: Boolean = false,
+    val enhancedKeepAlive: Boolean = true,
     val screenshotProtection: Boolean = true,
     val terminalFontSize: Int = 14,
     val scrollbackLines: Int = 10_000,
@@ -30,7 +30,7 @@ class SettingsStore(context: Context) {
     }
 
     private fun read() = AppSettings(
-        enhancedKeepAlive = preferences.getBoolean("enhanced_keep_alive", false),
+        enhancedKeepAlive = preferences.getBoolean("enhanced_keep_alive", true),
         screenshotProtection = preferences.getBoolean("screenshot_protection", true),
         terminalFontSize = preferences.getInt("terminal_font_size", 14).coerceIn(10, 24),
         scrollbackLines = preferences.getInt("scrollback_lines", 10_000).coerceIn(1_000, 20_000),

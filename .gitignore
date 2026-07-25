@@ -12,6 +12,9 @@ local.properties
 .externalNativeBuild/
 .cxx/
 
+# Locally served APK downloads and test artifacts
+downloads/
+
 # Signing material and local secrets
 *.jks
 *.keystore

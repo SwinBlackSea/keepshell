@@ -1,8 +1,5 @@
 package com.keepshell.ui.screens
 
-import android.content.Intent
-import android.net.Uri
-import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -45,7 +42,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.keepshell.BuildConfig
 import com.keepshell.data.AppSettings
+import com.keepshell.ssh.BackgroundConnectionPolicy
 import com.keepshell.ui.components.FormSectionTitle
 import com.keepshell.ui.theme.Canvas
 import com.keepshell.ui.theme.Ink
@@ -113,15 +112,20 @@ fun SettingsScreen(
                 SettingLinkRow(
                     icon = Icons.Rounded.BatterySaver,
                     title = "系统电池设置",
-                    detail = "调整 KeepShell 的后台电量策略",
+                    detail = if (
+                        BackgroundConnectionPolicy.requiresVendorBackgroundAccess()
+                    ) {
+                        "进入耗电管理，开启“允许完全后台行为”"
+                    } else if (BackgroundConnectionPolicy.isUnrestricted(context)) {
+                        "已允许后台运行"
+                    } else {
+                        "允许后台运行，防止 SSH 会话被系统冻结"
+                    },
                     onClick = {
-                        runCatching {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                    Uri.parse("package:${context.packageName}")
-                                )
-                            )
+                        if (BackgroundConnectionPolicy.requiresVendorBackgroundAccess()) {
+                            BackgroundConnectionPolicy.openAppSettings(context)
+                        } else if (!BackgroundConnectionPolicy.requestUnrestricted(context)) {
+                            BackgroundConnectionPolicy.openAppSettings(context)
                         }
                     }
                 )
@@ -176,7 +180,11 @@ fun SettingsScreen(
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text("KeepShell", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                    Text("版本 0.1.0 · 数据仅保存在此设备", color = Soft, fontSize = 11.sp)
+                    Text(
+                        "版本 ${BuildConfig.VERSION_NAME} · 数据仅保存在此设备",
+                        color = Soft,
+                        fontSize = 11.sp
+                    )
                 }
             }
         }

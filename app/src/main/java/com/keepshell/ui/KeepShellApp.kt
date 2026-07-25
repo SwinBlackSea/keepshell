@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -52,14 +53,17 @@ import com.keepshell.ui.theme.SignalSoft
 
 @Composable
 fun KeepShellApp(viewModel: MainViewModel) {
+    val context = LocalContext.current
     val screen by viewModel.screen.collectAsStateWithLifecycle()
     val hosts by viewModel.hosts.collectAsStateWithLifecycle()
     val session by viewModel.session.collectAsStateWithLifecycle()
-    val terminalLines by viewModel.terminalContent.collectAsStateWithLifecycle()
+    val terminalRevision by viewModel.terminalRevision.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val editor by viewModel.editor.collectAsStateWithLifecycle()
     val ctrlArmed by viewModel.ctrlArmed.collectAsStateWithLifecycle()
     val disconnectConfirmationRequest by viewModel.disconnectConfirmationRequest
+        .collectAsStateWithLifecycle()
+    val vendorBackgroundAccessRequest by viewModel.vendorBackgroundAccessRequest
         .collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -85,7 +89,7 @@ fun KeepShellApp(viewModel: MainViewModel) {
                     session = session,
                     onSettings = viewModel::showSettings,
                     onAdd = { viewModel.openEditor() },
-                    onConnect = viewModel::connect,
+                    onConnect = { host -> viewModel.connect(host, context) },
                     onEdit = viewModel::openEditor,
                     onOpenSession = viewModel::showTerminal
                 )
@@ -112,7 +116,8 @@ fun KeepShellApp(viewModel: MainViewModel) {
                     BackHandler(onBack = viewModel::showHosts)
                     TerminalScreen(
                         state = session,
-                        lines = terminalLines,
+                        terminalEngine = viewModel.terminalEngine,
+                        terminalRevision = terminalRevision,
                         settings = settings,
                         ctrlArmed = ctrlArmed,
                         disconnectConfirmationRequest = disconnectConfirmationRequest,
@@ -136,6 +141,33 @@ fun KeepShellApp(viewModel: MainViewModel) {
                 prompt = prompt,
                 onReject = viewModel::rejectFingerprint,
                 onTrust = { viewModel.trustFingerprint(prompt.isChanged) }
+            )
+        }
+
+        if (vendorBackgroundAccessRequest) {
+            AlertDialog(
+                onDismissRequest = viewModel::dismissVendorBackgroundAccessRequest,
+                title = {
+                    Text("允许后台 SSH", fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Text(
+                        "ColorOS 默认会在应用退到后台约 30 秒后冻结网络。请在下一页进入“耗电管理”，打开“允许完全后台行为”，完成后返回 KeepShell。",
+                        lineHeight = 21.sp
+                    )
+                },
+                dismissButton = {
+                    TextButton(onClick = viewModel::dismissVendorBackgroundAccessRequest) {
+                        Text("暂不")
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = { viewModel.openVendorBackgroundSettings(context) }
+                    ) {
+                        Text("去设置", color = Signal, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             )
         }
     }
