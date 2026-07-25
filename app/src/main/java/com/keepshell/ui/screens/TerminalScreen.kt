@@ -121,6 +121,16 @@ fun TerminalScreen(
     }
     val zoomIn = {
         if (overviewMode) {
+            terminalFontSize = terminalView?.nextFontSizeSpFromRendered(
+                deltaSp = 1,
+                minimumSizeSp = MIN_TERMINAL_FONT_SIZE_SP,
+                maximumSizeSp = MAX_TERMINAL_FONT_SIZE_SP
+            ) ?: TerminalViewportMath.adjustedFontSizeSp(
+                currentSizeSp = MIN_TERMINAL_FONT_SIZE_SP,
+                deltaSp = 1,
+                minimumSizeSp = MIN_TERMINAL_FONT_SIZE_SP,
+                maximumSizeSp = MAX_TERMINAL_FONT_SIZE_SP
+            )
             overviewMode = false
         } else {
             terminalFontSize = TerminalViewportMath.adjustedFontSizeSp(

@@ -5,6 +5,44 @@ import org.junit.Test
 
 class TerminalViewportMathTest {
     @Test
+    fun `zooming in after overview starts from the fitted pixels`() {
+        assertEquals(
+            7,
+            TerminalViewportMath.fontSizeStepFromRenderedPx(
+                renderedTextSizePx = 20,
+                scaledDensity = 3f,
+                deltaSp = 1,
+                minimumSizeSp = 6,
+                maximumSizeSp = 32
+            )
+        )
+    }
+
+    @Test
+    fun `many rapid font steps remain bounded`() {
+        var size = 14
+        repeat(10_000) {
+            size = TerminalViewportMath.adjustedFontSizeSp(
+                currentSizeSp = size,
+                deltaSp = 1,
+                minimumSizeSp = 6,
+                maximumSizeSp = 32
+            )
+        }
+        assertEquals(32, size)
+
+        repeat(10_000) {
+            size = TerminalViewportMath.adjustedFontSizeSp(
+                currentSizeSp = size,
+                deltaSp = -1,
+                minimumSizeSp = 6,
+                maximumSizeSp = 32
+            )
+        }
+        assertEquals(6, size)
+    }
+
+    @Test
     fun `font zoom stays inside the supported range`() {
         assertEquals(
             6,

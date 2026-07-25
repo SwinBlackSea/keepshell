@@ -11,6 +11,26 @@ import kotlin.math.floor
  * user's preferred font size.
  */
 internal object TerminalViewportMath {
+    fun fontSizeStepFromRenderedPx(
+        renderedTextSizePx: Int,
+        scaledDensity: Float,
+        deltaSp: Int,
+        minimumSizeSp: Int,
+        maximumSizeSp: Int
+    ): Int {
+        val renderedSizeSp = if (renderedTextSizePx > 0 && scaledDensity > 0f) {
+            floor(renderedTextSizePx / scaledDensity).toInt()
+        } else {
+            minimumSizeSp
+        }
+        return adjustedFontSizeSp(
+            currentSizeSp = renderedSizeSp,
+            deltaSp = deltaSp,
+            minimumSizeSp = minimumSizeSp,
+            maximumSizeSp = maximumSizeSp
+        )
+    }
+
     fun adjustedFontSizeSp(
         currentSizeSp: Int,
         deltaSp: Int,

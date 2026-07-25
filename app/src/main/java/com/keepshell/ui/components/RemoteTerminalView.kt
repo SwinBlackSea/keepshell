@@ -58,6 +58,23 @@ class RemoteTerminalView @JvmOverloads constructor(
     private var lastTouchY = 1
     private var singleTapPending = false
     private var lastSentSize: ViewportSize? = null
+    private var pendingTerminalSize: ViewportSize? = null
+    private var resizeDispatchScheduled = false
+    private val dispatchTerminalResize = Runnable {
+        resizeDispatchScheduled = false
+        val size = pendingTerminalSize ?: return@Runnable
+        pendingTerminalSize = null
+        if (size == lastSentSize) return@Runnable
+        lastSentSize = size
+        onTerminalResize(
+            size.columns,
+            size.rows,
+            size.cellWidthPx,
+            size.cellHeightPx,
+            size.widthPx,
+            size.heightPx
+        )
+    }
 
     private val gestureDetector = GestureDetector(
         context,
@@ -148,6 +165,8 @@ class RemoteTerminalView @JvmOverloads constructor(
             topRow = 0
             userScrolledBack = false
             displayedRevision = Long.MIN_VALUE
+            lastSentSize = null
+            notifyTerminalSize()
         }
         if (newFontSizeSp != fontSizeSp || newOverviewMode != overviewMode) {
             fontSizeSp = newFontSizeSp
@@ -176,6 +195,18 @@ class RemoteTerminalView @JvmOverloads constructor(
         clipBounds = Rect(0, 0, width, height)
         updateRendererForViewport()
         notifyTerminalSize()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        notifyTerminalSize()
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(dispatchTerminalResize)
+        resizeDispatchScheduled = false
+        pendingTerminalSize = null
+        super.onDetachedFromWindow()
     }
 
     override fun onCheckIsTextEditor(): Boolean = true
@@ -306,6 +337,19 @@ class RemoteTerminalView @JvmOverloads constructor(
         inputManager.hideSoftInputFromWindow(windowToken, 0)
     }
 
+    fun nextFontSizeSpFromRendered(
+        deltaSp: Int,
+        minimumSizeSp: Int,
+        maximumSizeSp: Int
+    ): Int = TerminalViewportMath.fontSizeStepFromRenderedPx(
+        renderedTextSizePx = rendererMetrics.textSizePx,
+        scaledDensity =
+            resources.displayMetrics.density * resources.configuration.fontScale,
+        deltaSp = deltaSp,
+        minimumSizeSp = minimumSizeSp,
+        maximumSizeSp = maximumSizeSp
+    )
+
     private fun applyScreenUpdate(revision: Long) {
         val terminal = engine ?: return
         val state = terminal.viewportState(clearScrollCounter = true)
@@ -341,16 +385,11 @@ class RemoteTerminalView @JvmOverloads constructor(
             widthPx = width,
             heightPx = height
         )
-        if (size == lastSentSize) return
-        lastSentSize = size
-        onTerminalResize(
-            size.columns,
-            size.rows,
-            size.cellWidthPx,
-            size.cellHeightPx,
-            size.widthPx,
-            size.heightPx
-        )
+        if (size == lastSentSize && pendingTerminalSize == null) return
+        pendingTerminalSize = size
+        if (resizeDispatchScheduled) return
+        resizeDispatchScheduled = true
+        postDelayed(dispatchTerminalResize, RESIZE_SETTLE_DELAY_MS)
     }
 
     private fun scrollTerminal(rowsDown: Int) {
@@ -514,6 +553,7 @@ class RemoteTerminalView @JvmOverloads constructor(
         const val MIN_COLUMNS = 4
         const val MIN_ROWS = 4
         const val MAX_SCROLL_EVENTS = 24
+        const val RESIZE_SETTLE_DELAY_MS = 80L
         const val TERMINAL_BACKGROUND = 0xFF101516.toInt()
         const val ESCAPE: Byte = 0x1B
         const val TAB: Byte = 0x09
